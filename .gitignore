@@ -1,0 +1,7 @@
+# Real config files (contain DuckDNS tokens)
+*.env
+!duckdns.env.example
+
+# Build/release artefacts
+*.tar.gz
+*.deb
