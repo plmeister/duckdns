@@ -2,108 +2,118 @@
 #
 # Keep DuckDNS A records in sync with this host's public IP.
 #
-# Config comes from an env file (DUCKDNS_ENV_FILE, default /etc/duckdns.env);
-# nothing is hard-coded. A "group" is one DuckDNS token plus the domains that
-# share it. Groups are numbered from 1 and must be contiguous:
+# Each group is defined by an env file in the config directory
+# (DUCKDNS_CONFIG_DIR). A group file contains:
 #
-#   DUCKDNS_1_DOMAINS=mydomain,otherdomain
-#   DUCKDNS_1_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-#   DUCKDNS_2_DOMAINS=example
-#   DUCKDNS_2_TOKEN=yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+#   DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#   DUCKDNS_DOMAINS=mydomain,otherdomain
+#
+# Defaults:
+#   - /etc/duckdns.d (system-wide)
+#   - ~/.config/duckdns (user, used if system dir missing and it exists)
 #
 # Optional overrides: DUCKDNS_IP_URL, DUCKDNS_DNS_SERVER, DUCKDNS_UPDATE_URL,
-# DUCKDNS_IP (skip the lookup), DUCKDNS_DRY_RUN=1, DUCKDNS_FORCE=1.
+# DUCKDNS_IP (skip lookup), DUCKDNS_DRY_RUN=1, DUCKDNS_FORCE=1.
 #
-# Only domains whose DNS answer differs from the public IP are updated, so the
-# script is safe to run on a short systemd timer.
+# Only domains whose DNS answer differs from the public IP are updated.
 #
 set -euo pipefail
-
-ENV_FILE=${DUCKDNS_ENV_FILE:-/etc/duckdns.env}
 
 log()  { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S%z')" "$*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 
-if [[ -r $ENV_FILE ]]; then
-  set -a; . "$ENV_FILE"; set +a
+if [[ -n ${DUCKDNS_CONFIG_DIR:-} ]]; then
+  conf_dir=$DUCKDNS_CONFIG_DIR
+elif [[ -d /etc/duckdns.d ]]; then
+  conf_dir=/etc/duckdns.d
+elif [[ -n ${XDG_CONFIG_HOME:-} && -d "${XDG_CONFIG_HOME}/duckdns" ]]; then
+  conf_dir="${XDG_CONFIG_HOME}/duckdns"
+elif [[ -d "$HOME/.config/duckdns" ]]; then
+  conf_dir="$HOME/.config/duckdns"
 else
-  fail "env file $ENV_FILE not found or not readable"
+  conf_dir=/etc/duckdns.d
 fi
 
-# Resolved after sourcing, so the env file can set these too.
 IP_URL=${DUCKDNS_IP_URL:-https://api.ipify.org}
 DNS_SERVER=${DUCKDNS_DNS_SERVER:-1.1.1.1}
 UPDATE_URL=${DUCKDNS_UPDATE_URL:-https://www.duckdns.org/update}
 
-# --- Collect groups ("domains|token") --------------------------------------
+shopt -s nullglob
+
+# Collect groups ("domains|token|file")
 groups=()
-i=1
-while :; do
-  d_var=DUCKDNS_${i}_DOMAINS
-  t_var=DUCKDNS_${i}_TOKEN
-  domains=${!d_var:-}
-  token=${!t_var:-}
-  [[ -n $domains || -n $token ]] || break
-  [[ -n $domains && -n $token ]] || fail "group $i needs both $d_var and $t_var"
-  groups+=("$domains|$token")
-  i=$((i + 1))
-done
-(( ${#groups[@]} )) || fail "no DUCKDNS_1_DOMAINS/DUCKDNS_1_TOKEN in $ENV_FILE"
+if [[ -d $conf_dir ]]; then
+  for f in "$conf_dir"/*.env; do
+    [[ -r $f ]] || continue
+    set -a
+    # shellcheck disable=SC1090
+    . "$f"
+    set +a
+    token=${DUCKDNS_TOKEN:-${TOKEN:-}}
+    domains=${DUCKDNS_DOMAINS:-${DOMAINS:-}}
+    if [[ -z $domains || -z $token ]]; then
+      log "WARNING: skipping $f (missing DUCKDNS_TOKEN or DUCKDNS_DOMAINS)" >&2
+      unset DUCKDNS_TOKEN DUCKDNS_DOMAINS TOKEN DOMAINS
+      continue
+    fi
+    groups+=("$domains|$token|$f")
+    unset DUCKDNS_TOKEN DUCKDNS_DOMAINS TOKEN DOMAINS
+  done
+fi
 
-# A gap (1 and 3 set, 2 missing) would silently drop later groups.
-while IFS= read -r var; do
-  if [[ $var =~ ^DUCKDNS_([0-9]+)_ ]] && (( BASH_REMATCH[1] > ${#groups[@]} )); then
-    fail "config gap: $var is set but group ${#groups[@]} is missing"
+# Backward compat: single /etc/duckdns.env
+if (( ${#groups[@]} == 0 )) && [[ -r /etc/duckdns.env ]]; then
+  set -a; . /etc/duckdns.env; set +a
+  token=${DUCKDNS_TOKEN:-}
+  domains=${DUCKDNS_DOMAINS:-}
+  if [[ -n $domains && -n $token ]]; then
+    groups+=("$domains|$token|/etc/duckdns.env")
   fi
-done < <(compgen -v DUCKDNS_ || true)
+  unset DUCKDNS_TOKEN DUCKDNS_DOMAINS
+fi
 
-# --- Public IP -------------------------------------------------------------
+(( ${#groups[@]} )) || fail "no groups found in $conf_dir/*.env or /etc/duckdns.env"
+
+# Public IP
 ip=${DUCKDNS_IP:-}
-[[ -n $ip ]] || ip=$(curl -fsS --max-time 15 "$IP_URL") ||
-  fail "could not determine public IP from $IP_URL"
+[[ -n $ip ]] || ip=$(curl -fsS --max-time 15 "$IP_URL") || fail "could not determine public IP from $IP_URL"
 [[ $ip =~ ^[0-9a-fA-F:.]{7,45}$ ]] || fail "implausible public IP: '$ip'"
 
-# --- Reconcile -------------------------------------------------------------
 rc=0
 for group in "${groups[@]}"; do
-  domains=${group%%|*}
-  token=${group##*|}
-
+  domains=${group%%|*}; rest=${group#*|}
+  token=${rest%%|*}; file=${rest##*|}
   drifted=()
-  IFS=, read -r -a list <<<"${domains// /}"
+  IFS=, read -r -a list <<<"${domains//[[:space:]]/}"
   for d in "${list[@]}"; do
     [[ -n $d ]] || continue
     dns=$(dig +short "$d.duckdns.org" "@$DNS_SERVER" | tail -n1) || true
     if [[ -z $dns ]]; then
-      log "ERROR: no DNS answer for $d.duckdns.org" >&2
+      log "ERROR: no DNS answer for $d.duckdns.org ($file)" >&2
       rc=1
     elif [[ ${DUCKDNS_FORCE:-0} == 1 || $dns != "$ip" ]]; then
       drifted+=("$d")
     else
-      log "$d already points at $dns"
+      log "$d already points at $dns ($file)"
     fi
   done
   (( ${#drifted[@]} )) || continue
-
   join=$(IFS=,; printf '%s' "${drifted[*]}")
   if [[ ${DUCKDNS_DRY_RUN:-0} == 1 ]]; then
-    log "would update $join -> $ip (dry run)"
+    log "would update $join -> $ip (dry run, $file)"
     continue
   fi
-
-  log "updating $join -> $ip"
+  log "updating $join -> $ip ($file)"
   resp=$(curl -fsS --max-time 15 --get \
       --data-urlencode "domains=$join" \
       --data-urlencode "token=$token" \
       --data-urlencode "ip=$ip" \
-      "$UPDATE_URL") || { log "ERROR: update request failed for $join" >&2; rc=1; continue; }
-
+      "$UPDATE_URL") || { log "ERROR: update request failed for $join ($file)" >&2; rc=1; continue; }
   if [[ $resp == OK ]]; then
-    log "update OK ($join)"
+    log "update OK ($join, $file)"
   else
-    log "ERROR: update rejected for $join: '${resp:-<empty>}'" >&2
+    log "ERROR: update rejected for $join: '${resp:-<empty>}' ($file)" >&2
     rc=1
   fi
 done
-
 exit "$rc"
