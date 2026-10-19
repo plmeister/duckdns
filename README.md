@@ -45,22 +45,55 @@ Set a different config path with `DUCKDNS_ENV_FILE=/path/to/file`.
 
 ## Install
 
-On the Debian/Ubuntu box, copy this directory over and run the installer as root:
+### One-liner (piped from GitHub)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh | sudo bash
+```
+
+Piping to a shell executes remote code, so read the script first if the host
+matters to you — same URL, no `| sudo bash`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh | less
+```
+
+To pin to an exact revision instead of whatever `main` is today, use a tag or
+commit hash:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh \
+  | sudo DUCKDNS_REF=<commit-sha> bash
+```
+
+Arguments go after `bash -s --`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh \
+  | sudo bash -s -- --uninstall
+```
+
+### From a checkout
+
+Copy this directory to the box and run the installer as root:
 
 ```sh
 sudo ./install.sh
 ```
 
-It installs the script to `/usr/local/bin`, both units to `/etc/systemd/system`,
-creates `/etc/duckdns.env` from the template (never overwriting an existing one),
-then `daemon-reload` and `enable --now` the timer. It checks for `curl` and `dig`
-first and tells you the apt line if either is missing
-(`curl`, `dnsutils` — or `bind9-dnsutils` on newer releases).
+Both paths install the script to `/usr/local/bin`, the units to
+`/etc/systemd/system`, create `/etc/duckdns.env` from the template (never
+overwriting an existing one), then `daemon-reload` and `enable --now` the timer.
+They check for `curl` and `dig` first and print the apt line if either is
+missing (`curl`, `dnsutils` — or `bind9-dnsutils` on newer releases).
 
 ```sh
 sudo ./install.sh --uninstall   # stop timer, remove units + script, keep config
 sudo ./install.sh --purge       # also delete /etc/duckdns.env
 ```
+
+`--help`, `--uninstall` and `--purge` need no download; only the install path
+fetches the repo tarball.
 
 Manual equivalent, if you prefer to see every step:
 

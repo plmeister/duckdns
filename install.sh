@@ -7,7 +7,8 @@
 #   ...with args:    curl -fsSL <raw-url>/install.sh | sudo bash -s -- --uninstall
 #
 # When piped there are no sibling files, so the repo tarball is fetched into a
-# temporary directory first. Override the source with:
+# temporary directory. Only the install path needs the payload: --help and
+# --uninstall never download anything. Override the source with:
 #   DUCKDNS_REPO=owner/duckdns   (default below)
 #   DUCKDNS_REF=<branch|tag|commit>
 #   DUCKDNS_TARBALL_URL=<full url>  (any host; beats the two above)
@@ -47,11 +48,50 @@ Environment:
 EOF
 }
 
+# --- Arguments (parsed first, so --help/--uninstall need no download) ------
+mode=install
+purge=0
+for a in "$@"; do
+  case $a in
+    --uninstall) mode=uninstall ;;
+    --purge)     mode=uninstall; purge=1 ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           usage >&2; echo "ERROR: unknown argument: $a" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z $DESTDIR && $EUID -ne 0 ]]; then
+  echo "ERROR: run as root (sudo $0 $*)" >&2
+  exit 1
+fi
+
+have_systemd=0
+if [[ -z $DESTDIR ]] && command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+  have_systemd=1
+fi
+
+# --- uninstall (no payload required) --------------------------------------
+if [[ $mode == uninstall ]]; then
+  if (( have_systemd )); then
+    systemctl disable --now duckdns-update.timer 2>/dev/null || true
+  fi
+  rm -f "$DESTDIR$UNIT_DIR"/duckdns-update.{service,timer} "$DESTDIR$BIN_DIR/$SCRIPT"
+  if (( purge )); then
+    rm -f "$DESTDIR$ENV_FILE"
+    echo "removed $ENV_FILE"
+  else
+    echo "kept $ENV_FILE (use --purge to delete it)"
+  fi
+  (( have_systemd )) && systemctl daemon-reload
+  echo "uninstalled."
+  exit 0
+fi
+
+# --- Locate the payload, fetching it when piped ---------------------------
 tmp=""
 cleanup() { [[ -n $tmp ]] && rm -rf "$tmp"; }
 trap cleanup EXIT
 
-# --- Locate the payload, fetching it when piped ----------------------------
 SRC=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || SRC=$PWD
 if [[ ! -f $SRC/$SCRIPT ]]; then
   command -v curl >/dev/null 2>&1 || { echo "ERROR: curl is required" >&2; exit 1; }
@@ -74,45 +114,6 @@ done
 if (( ${#missing[@]} )); then
   echo "ERROR: missing files in $SRC: ${missing[*]}" >&2
   exit 1
-fi
-
-# --- Arguments -------------------------------------------------------------
-mode=install
-purge=0
-for a in "$@"; do
-  case $a in
-    --uninstall) mode=uninstall ;;
-    --purge)     mode=uninstall; purge=1 ;;
-    -h|--help)   usage; exit 0 ;;
-    *)           usage >&2; echo "ERROR: unknown argument: $a" >&2; exit 1 ;;
-  esac
-done
-
-if [[ -z $DESTDIR && $EUID -ne 0 ]]; then
-  echo "ERROR: run as root (sudo $0 $*)" >&2
-  exit 1
-fi
-
-have_systemd=0
-if [[ -z $DESTDIR ]] && command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-  have_systemd=1
-fi
-
-# --- uninstall -------------------------------------------------------------
-if [[ $mode == uninstall ]]; then
-  if (( have_systemd )); then
-    systemctl disable --now duckdns-update.timer 2>/dev/null || true
-  fi
-  rm -f "$DESTDIR$UNIT_DIR"/duckdns-update.{service,timer} "$DESTDIR$BIN_DIR/$SCRIPT"
-  if (( purge )); then
-    rm -f "$DESTDIR$ENV_FILE"
-    echo "removed $ENV_FILE"
-  else
-    echo "kept $ENV_FILE (use --purge to delete it)"
-  fi
-  (( have_systemd )) && systemctl daemon-reload
-  echo "uninstalled."
-  exit 0
 fi
 
 # --- install ---------------------------------------------------------------
