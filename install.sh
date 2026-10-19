@@ -7,7 +7,6 @@ set -euo pipefail
 DESTDIR=${DESTDIR:-}
 
 SCRIPT=duckdns-update.sh
-UNITS=(duckdns-update.service duckdns-update.timer)
 
 usage() {
   cat <<EOF

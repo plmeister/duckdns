@@ -1,127 +1,143 @@
 # duckdns
 
 Keeps DuckDNS A records in sync with the host's public IP. Configuration is
-entirely file-driven (no hard-coded domains or tokens) and supports any number
-of domains and tokens.
+file-driven (no hard-coded domains or tokens) and supports any number of
+domains and tokens across multiple accounts.
 
-Only domains whose current DNS answer differs from the public IP are updated,
-so the script is safe to run on a short timer. No CLI arguments; everything is
-controlled by the env file.
+Only records whose DNS answer differs from the public IP are updated, so the
+script is safe to run on a short timer. There are no CLI arguments; everything
+is controlled by config files and environment overrides.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `duckdns-update.sh` | The updater. Reads config from an env file. |
-| `duckdns-update.service` | `Type=oneshot` unit that runs the script. |
+| `duckdns-update.sh` | The updater. Reads groups from config files. |
 | `duckdns-update.timer` | Runs the service 1 min after boot, then every 15 min. |
-| `duckdns.env.example` | Template config. |
-| `install.sh` | Installs/removes the above on a systemd host. |
+| `example.env.example` | Example group config file. |
+| `install.sh` | Installs/removes for user or system scope, generating the service unit. |
 
 ## Configuration
 
-`/etc/duckdns.env` (root-owned, mode `0600`). A *group* is one DuckDNS token
-plus every domain updated with it:
+The updater reads every `*.env` file in a config directory. Each file defines
+one group: one DuckDNS token plus the domains updated with it.
+
+Defaults:
+
+- **System scope**: `/etc/duckdns.d/` — e.g. `/etc/duckdns.d/mydomain.env`
+- **User scope**: `~/.config/duckdns/` — e.g. `~/.config/duckdns/mydomain.env`
+
+Override with `DUCKDNS_CONFIG_DIR`.
+
+Each group file contains:
 
 ```sh
-DUCKDNS_1_DOMAINS=mydomain,otherdomain
-DUCKDNS_1_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-DUCKDNS_2_DOMAINS=example
-DUCKDNS_2_TOKEN=yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+DUCKDNS_DOMAINS=mydomain,otherdomain
 ```
 
-- Groups are numbered from `1` and must be contiguous. A gap (`1` and `3` set,
-  `2` missing) is a fatal error rather than a silent skip.
 - Domains are written without the `.duckdns.org` suffix.
-- A group with domains but no token (or vice versa) is a fatal error.
-- A missing or unreadable env file is a fatal error.
+- A file missing either value is skipped with a warning, so the remaining groups
+  still run.
+- Backward compatibility: if the config directory yields no groups and
+  `/etc/duckdns.env` exists, that file is read as a single group.
+- The log says which file each group came from.
 
-Optional overrides, readable from the env file: `DUCKDNS_IP_URL`,
+Optional overrides, from the environment or a group file: `DUCKDNS_IP_URL`,
 `DUCKDNS_DNS_SERVER`, `DUCKDNS_UPDATE_URL`, `DUCKDNS_IP` (skip the lookup and
 use this address), `DUCKDNS_DRY_RUN=1` (report only), `DUCKDNS_FORCE=1` (update
 even when DNS already matches).
 
-Set a different config path with `DUCKDNS_ENV_FILE=/path/to/file`.
+## Quick install
 
-## Install
-
-### One-liner (piped from GitHub)
+User scope, the default when not running as root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.1.2/install.sh | bash -s -- --user
 ```
 
-Piping to a shell executes remote code, so read the script first if the host
-matters to you — same URL, no `| sudo bash`:
+System scope, needs root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh | less
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.1.2/install.sh | sudo bash -s -- --system
 ```
 
-To pin to an exact revision instead of whatever `main` is today, use a tag or
-commit hash:
+Piping to a shell runs remote code, so read it first if the host matters —
+same URL, without the `| bash`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh \
-  | sudo DUCKDNS_REF=<commit-sha> bash
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.1.2/install.sh | less
 ```
 
-Arguments go after `bash -s --`:
+To pin to an exact revision instead of whatever `main` is today, pass `main` in
+the URL but set the ref explicitly:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh \
-  | sudo bash -s -- --uninstall
+  | bash -s -- --user DUCKDNS_REF=<tag-or-commit>
 ```
 
-### From a checkout
+From a checkout, `./install.sh` behaves the same and uses the local files.
 
-Copy this directory to the box and run the installer as root:
+What the installer does:
 
-```sh
-sudo ./install.sh
-```
+- Picks scope: `--system` or `--user`, defaulting by whether you are root.
+- Installs `duckdns-update.sh` to `/usr/local/bin` (system) or `~/.local/bin` (user).
+- Generates `duckdns-update.service` with the right `ExecStart` and
+  `DUCKDNS_CONFIG_DIR`, and installs it with `duckdns-update.timer` into
+  `/etc/systemd/system` or `~/.config/systemd/user`.
+- Creates the config directory and drops `example.env` only if no `*.env` files
+  exist; existing configs are never overwritten.
+- Enables and starts the timer with `systemctl` or `systemctl --user`.
+- For user scope, reminds you about lingering, which the timer needs to run
+  while you are logged out:
 
-Both paths install the script to `/usr/local/bin`, the units to
-`/etc/systemd/system`, create `/etc/duckdns.env` from the template (never
-overwriting an existing one), then `daemon-reload` and `enable --now` the timer.
-They check for `curl` and `dig` first and print the apt line if either is
+  ```sh
+  sudo loginctl enable-linger $USER
+  ```
+
+Optionally checks for `curl` and `dig` and prints the apt line if either is
 missing (`curl`, `dnsutils` — or `bind9-dnsutils` on newer releases).
-
-```sh
-sudo ./install.sh --uninstall   # stop timer, remove units + script, keep config
-sudo ./install.sh --purge       # also delete /etc/duckdns.env
-```
-
 `--help`, `--uninstall` and `--purge` need no download; only the install path
 fetches the repo tarball.
 
-Manual equivalent, if you prefer to see every step:
+## Uninstall
 
 ```sh
-sudo install -m 0755 duckdns-update.sh /usr/local/bin/duckdns-update.sh
-sudo install -m 0600 duckdns.env.example /etc/duckdns.env
-sudoedit /etc/duckdns.env                 # real domains + tokens
-sudo install -m 0644 duckdns-update.service duckdns-update.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now duckdns-update.timer
+# stop timer, remove units and script, keep configs
+./install.sh --user --uninstall
+
+# same, and delete the config directory
+./install.sh --user --purge
 ```
 
 ## Verify
 
+User scope:
+
+```sh
+systemctl --user list-timers duckdns-update.timer
+systemctl --user start duckdns-update.service
+journalctl --user -u duckdns-update.service -n 20 --no-pager
+```
+
+System scope:
+
 ```sh
 systemctl list-timers duckdns-update.timer
-sudo systemctl start duckdns-update.service    # run once now
+sudo systemctl start duckdns-update.service
 journalctl -u duckdns-update.service -n 20 --no-pager
 ```
 
-Dry run without touching the API:
+Dry run, no API calls:
 
 ```sh
-DUCKDNS_ENV_FILE=/etc/duckdns.env DUCKDNS_DRY_RUN=1 /usr/local/bin/duckdns-update.sh
+DUCKDNS_CONFIG_DIR=~/.config/duckdns DUCKDNS_DRY_RUN=1 ~/.local/bin/duckdns-update.sh
+DUCKDNS_CONFIG_DIR=/etc/duckdns.d DUCKDNS_DRY_RUN=1 /usr/local/bin/duckdns-update.sh
 ```
 
-Exit status is non-zero if the config is invalid, any DNS lookup failed, or any
-update was rejected. Other groups are still processed after a failure.
+Exit status is non-zero if any DNS lookup failed or any update was rejected.
+Remaining groups are still processed after a failure.
 
 ## Notes
 
@@ -135,5 +151,5 @@ update was rejected. Other groups are still processed after a failure.
 - Tokens are never written to the log.
 - Only IPv4 `A` records are managed. IPv6 would need a second lookup and the
   `ipv6=` parameter.
-- To change the interval, edit `OnUnitActiveSec` in the timer and
-  `systemctl daemon-reload`.
+- To change the interval, edit `OnUnitActiveSec` in the timer and reload
+  (`systemctl --user daemon-reload` or `sudo systemctl daemon-reload`).
