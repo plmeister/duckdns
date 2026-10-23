@@ -46,7 +46,26 @@ DUCKDNS_DOMAINS=mydomain,otherdomain
 Optional overrides, from the environment or a group file: `DUCKDNS_IP_URL`,
 `DUCKDNS_DNS_SERVER`, `DUCKDNS_UPDATE_URL`, `DUCKDNS_IP` (skip the lookup and
 use this address), `DUCKDNS_DRY_RUN=1` (report only), `DUCKDNS_FORCE=1` (update
-even when DNS already matches).
+even when DNS already matches), `DUCKDNS_VERBOSE=1` (extra `DEBUG:` lines:
+config dir, groups, IP source, per-domain lookup result, update request and
+response). Tokens are never logged, verbose or not.
+
+### Enabling verbose logging under systemd
+
+The units pass the environment through untouched, so use a drop-in (it
+survives `install.sh` upgrades, which rewrite the `.service` file):
+
+```bash
+mkdir -p ~/.config/systemd/user/duckdns-update.service.d
+printf '[Service]\nEnvironment=DUCKDNS_VERBOSE=1\n' \
+  > ~/.config/systemd/user/duckdns-update.service.d/verbose.conf
+systemctl --user daemon-reload
+```
+
+For system scope use `/etc/systemd/system/duckdns-update.service.d/verbose.conf`
+and `sudo systemctl daemon-reload`. Then read the output with
+`journalctl --user -u duckdns-update.service -o cat` (omit `--user` for system
+scope). Remove the drop-in to go back to the quiet log.
 
 ## Quick install
 

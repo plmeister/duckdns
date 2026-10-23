@@ -13,7 +13,8 @@
 #   - ~/.config/duckdns (user, used if system dir missing and it exists)
 #
 # Optional overrides: DUCKDNS_IP_URL, DUCKDNS_DNS_SERVER, DUCKDNS_UPDATE_URL,
-# DUCKDNS_IP (skip lookup), DUCKDNS_DRY_RUN=1, DUCKDNS_FORCE=1.
+# DUCKDNS_IP (skip lookup), DUCKDNS_DRY_RUN=1, DUCKDNS_FORCE=1,
+# DUCKDNS_VERBOSE=1 (extra diagnostic lines; never includes tokens).
 #
 # Only domains whose DNS answer differs from the public IP are updated.
 #
@@ -21,6 +22,8 @@ set -euo pipefail
 
 log()  { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S%z')" "$*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
+# Diagnostic lines, only when DUCKDNS_VERBOSE=1. Never log the token.
+vlog() { if [[ ${DUCKDNS_VERBOSE:-0} == 1 ]]; then log "DEBUG: $*"; fi; }
 
 if [[ -n ${DUCKDNS_CONFIG_DIR:-} ]]; then
   conf_dir=$DUCKDNS_CONFIG_DIR
@@ -33,6 +36,7 @@ elif [[ -d "$HOME/.config/duckdns" ]]; then
 else
   conf_dir=/etc/duckdns.d
 fi
+vlog "config dir: $conf_dir"
 
 IP_URL=${DUCKDNS_IP_URL:-https://api.ipify.org}
 DNS_SERVER=${DUCKDNS_DNS_SERVER:-1.1.1.1}
@@ -57,6 +61,7 @@ if [[ -d $conf_dir ]]; then
       continue
     fi
     groups+=("$domains|$token|$f")
+    vlog "group $f: domains=$domains"
     unset DUCKDNS_TOKEN DUCKDNS_DOMAINS TOKEN DOMAINS
   done
 fi
@@ -76,8 +81,15 @@ fi
 
 # Public IP
 ip=${DUCKDNS_IP:-}
-[[ -n $ip ]] || ip=$(curl -fsS --max-time 15 "$IP_URL") || fail "could not determine public IP from $IP_URL"
+if [[ -n $ip ]]; then
+  ip_src="DUCKDNS_IP override"
+else
+  ip=$(curl -fsS --max-time 15 "$IP_URL") || fail "could not determine public IP from $IP_URL"
+  ip_src=$IP_URL
+fi
 [[ $ip =~ ^[0-9a-fA-F:.]{7,45}$ ]] || fail "implausible public IP: '$ip'"
+vlog "public IP: $ip (source: $ip_src)"
+vlog "dns server: $DNS_SERVER; groups: ${#groups[@]}"
 
 rc=0
 for group in "${groups[@]}"; do
@@ -88,6 +100,7 @@ for group in "${groups[@]}"; do
   for d in "${list[@]}"; do
     [[ -n $d ]] || continue
     dns=$(dig +short "$d.duckdns.org" "@$DNS_SERVER" | tail -n1) || true
+    vlog "lookup $d.duckdns.org @$DNS_SERVER -> ${dns:-<no answer>}"
     if [[ -z $dns ]]; then
       log "ERROR: no DNS answer for $d.duckdns.org ($file)" >&2
       rc=1
@@ -104,11 +117,13 @@ for group in "${groups[@]}"; do
     continue
   fi
   log "updating $join -> $ip ($file)"
+  vlog "request: url=$UPDATE_URL domains=$join ip=$ip file=$file"
   resp=$(curl -fsS --max-time 15 --get \
       --data-urlencode "domains=$join" \
       --data-urlencode "token=$token" \
       --data-urlencode "ip=$ip" \
       "$UPDATE_URL") || { log "ERROR: update request failed for $join ($file)" >&2; rc=1; continue; }
+  vlog "response: '${resp:-<empty>}'"
   if [[ $resp == OK ]]; then
     log "update OK ($join, $file)"
   else
@@ -116,4 +131,5 @@ for group in "${groups[@]}"; do
     rc=1
   fi
 done
+vlog "finished: groups=${#groups[@]} rc=$rc"
 exit "$rc"
