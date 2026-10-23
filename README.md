@@ -64,28 +64,34 @@ systemctl --user daemon-reload
 
 For system scope use `/etc/systemd/system/duckdns-update.service.d/verbose.conf`
 and `sudo systemctl daemon-reload`. Then read the output with
-`journalctl --user -u duckdns-update.service -o cat` (omit `--user` for system
-scope). Remove the drop-in to go back to the quiet log.
+`journalctl --user-unit=duckdns-update.service -o cat` (for system scope use
+`journalctl -u duckdns-update.service -o cat`). Remove the drop-in to go back
+to the quiet log.
+
+`--user-unit=` is not the same as `--user -u`: the former matches user-unit
+entries in whatever journal is readable, the latter restricts journalctl to your
+own `user-<uid>.journal` file. Hosts running journald with `SplitMode=none`
+(no per-user journal file) only work with `--user-unit=`.
 
 ## Quick install
 
 User scope, the default when not running as root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.0/install.sh | bash -s -- --user
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.1/install.sh | bash -s -- --user
 ```
 
 System scope, needs root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.0/install.sh | sudo bash -s -- --system
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.1/install.sh | sudo bash -s -- --system
 ```
 
 Piping to a shell runs remote code, so read it first if the host matters —
 same URL, without the `| bash`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.0/install.sh | less
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.1/install.sh | less
 ```
 
 To pin to an exact revision instead of whatever `main` is today, keep `main` in
@@ -146,7 +152,7 @@ User scope:
 ```sh
 systemctl --user list-timers duckdns-update.timer
 systemctl --user start duckdns-update.service
-journalctl --user -u duckdns-update.service -n 20 --no-pager
+journalctl --user-unit=duckdns-update.service -n 20 --no-pager
 ```
 
 Confirm the timer is actually armed (a wedged timer shows `elapsed` and no
@@ -182,6 +188,11 @@ Remaining groups are still processed after a failure.
   `systemd-networkd-wait-online`). The script is idempotent, so a race just
   costs one no-op run.
 - Logging goes to journald; no log file or rotation to manage.
+- Log lines carry no timestamp of their own. Under systemd journald prefixes
+  every entry, and two timestamps per line made the log harder to read. Manual
+  runs therefore print bare messages; add one back with
+  `./duckdns-update.sh | ts '%Y-%m-%d %H:%M:%S%z'` (moreutils) or `awk` if you
+  want times in a terminal.
 - `Persistent=true` fires one catch-up run if the host was down across a
   scheduled tick.
 - Timing is calendar-based rather than `OnBootSec=` + `OnUnitActiveSec=`:

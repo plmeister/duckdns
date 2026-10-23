@@ -20,7 +20,9 @@
 #
 set -euo pipefail
 
-log()  { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S%z')" "$*"; }
+# Log lines carry no timestamp of their own: journald prefixes every entry when
+# running under systemd, and a second one only makes the log harder to read.
+log() { printf '%s\n' "$*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 # Diagnostic lines, only when DUCKDNS_VERBOSE=1. Never log the token.
 vlog() { if [[ ${DUCKDNS_VERBOSE:-0} == 1 ]]; then log "DEBUG: $*"; fi; }
@@ -99,7 +101,11 @@ for group in "${groups[@]}"; do
   IFS=, read -r -a list <<<"${domains//[[:space:]]/}"
   for d in "${list[@]}"; do
     [[ -n $d ]] || continue
-    dns=$(dig +short "$d.duckdns.org" "@$DNS_SERVER" | tail -n1) || true
+    # Keep only answer lines that are actually addresses: dig writes resolver
+    # errors (";; no servers could be reached") to stdout even with +short, and
+    # those must not be mistaken for a DNS answer.
+    dns=$(dig +short "$d.duckdns.org" "@$DNS_SERVER" 2>/dev/null \
+          | grep -Eo '^[0-9a-fA-F:.]+$' | tail -n1) || true
     vlog "lookup $d.duckdns.org @$DNS_SERVER -> ${dns:-<no answer>}"
     if [[ -z $dns ]]; then
       log "ERROR: no DNS answer for $d.duckdns.org ($file)" >&2
