@@ -2,8 +2,7 @@
 Description=Run DuckDNS updater periodically
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=15min
+OnCalendar=*:0/15
 Persistent=true
 RandomizedDelaySec=30
 

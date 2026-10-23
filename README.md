@@ -13,7 +13,7 @@ is controlled by config files and environment overrides.
 | File | Purpose |
 |------|---------|
 | `duckdns-update.sh` | The updater. Reads groups from config files. |
-| `duckdns-update.timer` | Runs the service 1 min after boot, then every 15 min. |
+| `duckdns-update.timer` | Runs the service every 15 min (calendar-based), with catch-up after downtime. |
 | `example.env.example` | Example group config file. |
 | `install.sh` | Installs/removes for user or system scope, generating the service unit. |
 
@@ -148,8 +148,12 @@ Remaining groups are still processed after a failure.
 - Logging goes to journald; no log file or rotation to manage.
 - `Persistent=true` fires one catch-up run if the host was down across a
   scheduled tick.
+- Timing is calendar-based rather than `OnBootSec=` + `OnUnitActiveSec=`:
+  in a *user* timer `OnBootSec` is measured from system boot, so any
+  restart of the timer mid-session leaves it `active (elapsed)` with no
+  next run scheduled.
 - Tokens are never written to the log.
 - Only IPv4 `A` records are managed. IPv6 would need a second lookup and the
   `ipv6=` parameter.
-- To change the interval, edit `OnUnitActiveSec` in the timer and reload
+- To change the interval, edit `OnCalendar` in the timer and reload
   (`systemctl --user daemon-reload` or `sudo systemctl daemon-reload`).
