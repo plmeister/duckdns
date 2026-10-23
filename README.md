@@ -72,28 +72,32 @@ scope). Remove the drop-in to go back to the quiet log.
 User scope, the default when not running as root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.1.2/install.sh | bash -s -- --user
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.0/install.sh | bash -s -- --user
 ```
 
 System scope, needs root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.1.2/install.sh | sudo bash -s -- --system
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.0/install.sh | sudo bash -s -- --system
 ```
 
 Piping to a shell runs remote code, so read it first if the host matters —
 same URL, without the `| bash`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.1.2/install.sh | less
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/v1.2.0/install.sh | less
 ```
 
-To pin to an exact revision instead of whatever `main` is today, pass `main` in
-the URL but set the ref explicitly:
+To pin to an exact revision instead of whatever `main` is today, keep `main` in
+the URL but set the ref in the environment of the `bash` on the right-hand side
+of the pipe. It is an environment variable, not a CLI argument:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh \
-  | bash -s -- --user DUCKDNS_REF=<tag-or-commit>
+  | DUCKDNS_REF=<tag-or-commit> bash -s -- --user
+
+curl -fsSL https://raw.githubusercontent.com/plmeister/duckdns/main/install.sh \
+  | sudo DUCKDNS_REF=<tag-or-commit> bash -s -- --system
 ```
 
 From a checkout, `./install.sh` behaves the same and uses the local files.
@@ -108,17 +112,22 @@ What the installer does:
 - Creates the config directory and drops `example.env` only if no `*.env` files
   exist; existing configs are never overwritten.
 - Enables and starts the timer with `systemctl` or `systemctl --user`.
-- For user scope, reminds you about lingering, which the timer needs to run
-  while you are logged out:
+- Does **not** enable lingering. Without lingering a user manager only exists
+  while you are logged in, so the timer runs nothing before login or after
+  logout. Enable it yourself if that matters:
 
   ```sh
-  sudo loginctl enable-linger $USER
+  loginctl enable-linger $USER
+  loginctl show-user $USER -p Linger    # Linger=yes
   ```
 
-Optionally checks for `curl` and `dig` and prints the apt line if either is
-missing (`curl`, `dnsutils` — or `bind9-dnsutils` on newer releases).
-`--help`, `--uninstall` and `--purge` need no download; only the install path
-fetches the repo tarball.
+Checks for `curl` and `dig` (only when systemd is present) and aborts with
+`missing curl` or `missing dig` if either is absent. Install them with
+`sudo apt install curl dnsutils` (`bind9-dnsutils` on newer releases).
+
+`--help` needs no download. `--uninstall` and `--purge` still fetch the repo
+tarball when piped, because the script can only see its own repo when it is run
+from a file; run them from a checkout to stay offline.
 
 ## Uninstall
 
@@ -138,6 +147,14 @@ User scope:
 systemctl --user list-timers duckdns-update.timer
 systemctl --user start duckdns-update.service
 journalctl --user -u duckdns-update.service -n 20 --no-pager
+```
+
+Confirm the timer is actually armed (a wedged timer shows `elapsed` and no
+next run, so nothing fires):
+
+```sh
+systemctl --user show duckdns-update.timer -p SubState,NextElapseUSecRealtime
+# want: SubState=waiting  and a non-empty NextElapseUSecRealtime=
 ```
 
 System scope:
